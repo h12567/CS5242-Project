@@ -133,7 +133,7 @@ with open(testPath) as combinedcsvfile:
 ypred = bst.predict(test, num_iteration=bst.best_iteration)
 
 counter = 0
-with open('./predict.csv', 'w', newline='') as submitcsvfile:
+with open('./test.csv', 'w', newline='') as submitcsvfile:
     submitwriter = csv.writer(submitcsvfile)
     submitwriter.writerow(["sample_id", "malware"])
     for index, val in enumerate(indexes):
@@ -142,4 +142,4 @@ with open('./predict.csv', 'w', newline='') as submitcsvfile:
         else:
             submitwriter.writerow([index, ypred[counter]])
             counter += 1
-print('Written to ./predict.csv')
+print('Written to ./test.csv')

@@ -118,9 +118,8 @@ train_labels_path = next(p for p in ['./data/train_label.csv', './train_label.cs
 with open(train_path) as traincsvfile, open(train_labels_path) as trainlabelcsvfile:
     trainreader = csv.reader(traincsvfile)
     trainlabelreader = csv.reader(trainlabelcsvfile)
+    next(trainlabelreader, None)
     for i, row in enumerate(trainreader):
-        if i > 5000:
-            break
         try:
             parsed = parse_hex(bytes([int(x) for x in row]))
             out = normalize_pe(parsed)
@@ -163,7 +162,7 @@ num_round = 900
 bst = lgb.train(params, 
                 train_data, 
                 num_round, 
-#                 valid_sets=[test_data],
+                valid_sets=[test_data],
                )
 # Save model
 bst.save_model('model.txt', num_iteration=bst.best_iteration)
