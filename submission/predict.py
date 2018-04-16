@@ -3,6 +3,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import csv
+import os
 from struct import unpack
 
 # https://marcin-chwedczuk.github.io/a-closer-look-at-portable-executable-msdos-stub
@@ -24,7 +25,7 @@ def parse_hex(string):
     max_size = len(string)
     if max_size < 64:
         raise Exception('max_size error', max_size)
-    
+
     ms_dos_header = unpack(MS_DOS_HEADER_FORMAT, string[:64])
     pe_sig_start = ms_dos_header[-1]
     pe_sig_end = pe_sig_start + 4
@@ -33,25 +34,25 @@ def parse_hex(string):
     if pe_sig_start > 64:
         ms_dos_stub = unpack(MS_DOS_STUB_FORMAT.format(pe_sig_start - 64),
                              string[64:pe_sig_start])
-    
+
     sig = unpack(SIGNATURE_FORMAT, string[pe_sig_start:pe_sig_end])
-    
+
     coff_start = pe_sig_end
     coff_end = pe_sig_end + 20
     coff = unpack(COFF_FILE_HEADER_FORMAT,
                  string[pe_sig_end:coff_end])
-    
+
     optional_header_size = coff[-2]
     img_opt_hdr_start = coff_end
     img_opt_hdr_mid = coff_end + 24
     img_opt_hrd_end = coff_end + optional_header_size
-    
+
     optional_header = ()
     if optional_header_size != 0 and max_size > img_opt_hrd_end:
         optional_header = unpack(IMAGE_OPTIONAL_HEADER_STANDARD_FORMAT,
                                  string[img_opt_hdr_start:img_opt_hdr_mid])
         pe_format = optional_header[0]
-        
+
         # Optional Header Windows-Specific Fields (Image Only)
         if pe_format == 267:
             # format is PE32
@@ -67,7 +68,7 @@ def parse_hex(string):
             raise Exception('pe_format error', pe_format)
     else:
         raise Exception('coff error', coff)
-    
+
     number_of_sections = coff[1]
     section_start = img_opt_hrd_end
     section_end = img_opt_hrd_end + 40
@@ -88,7 +89,7 @@ def normalize_pe(parsed):
     max_headers = 26
     N = 4400
     ms_dos_header, ms_dos_stub, sig, coff, optional_header, sections, section_data = parsed
-    
+
     output_sections = []
     for s in sections[:max_headers]:
         key = s[0]
@@ -99,7 +100,7 @@ def normalize_pe(parsed):
         # pad with null
         output_sections += [np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan]
     output_sections += [len(sections) > max_headers,]
-    
+
     ms_dos_hash = [0 for i in range(0,256)]
     for x in ms_dos_stub:
         ms_dos_hash[x] += 1
@@ -108,67 +109,37 @@ def normalize_pe(parsed):
     output += [0] * (N - len(output))
     return output
 
-train = []
-train_label = []
 
-combined = "./data/train_combined.csv"
-with open(combined) as combinedcsvfile:
+# Load model
+bst = lgb.Booster(model_file="./model.txt")
+
+test = []
+indexes = []
+
+testPath = next(p for p in ['./data/test.csv', './test.csv'] if os.path.isfile(p))
+with open(testPath) as combinedcsvfile:
     combinedreader = csv.reader(combinedcsvfile)
     for i, row in enumerate(combinedreader):
         try:
-            parsed = parse_hex(bytes([int(x) for x in row[:-1]]))
+            parsed = parse_hex(bytes([int(x) for x in row]))
+            out = normalize_pe(parsed)
+            test += [out]
+            indexes += [1]
         except Exception as inst:
-            print(i)
-            print("Failed to parse: is_malware =", row[-1])
+            print("Failed to parse")
             print(inst.args)
-            continue
-        out = normalize_pe(parsed)
-        train += [out]
-        train_label += [row[-1]]
+            indexes += [0]
 
-train = pd.DataFrame(train)
-train_label = np.array(train_label)
-print(train.shape)
-print(train_label.shape)
-train.to_csv('./data/parsed_train.csv', index=False, header=False)
-pd.DataFrame(train_label).to_csv('./data/parsed_labels.csv', index=False, header=False)
+ypred = bst.predict(test, num_iteration=bst.best_iteration)
 
-TOTAL_ROWS = 113636
-ROWS = TOTAL_ROWS
-
-train = pd.read_csv("./parsed_train.csv", nrows=ROWS, header=None)
-train_label = pd.read_csv("./parsed_labels.csv", nrows=ROWS, header=None)
-
-assert train.shape[0] == train_label.shape[0], "Train and label shapes are different"
-
-mask = np.random.rand(len(train)) < 0.8
-
-x_train = train[mask]
-y_train = train_label[mask]
-x_test = train[~mask]
-y_test = train_label[~mask]
-
-train_data = lgb.Dataset(x_train, label=y_train.values.ravel())
-
-# Create validation data
-test_data = train_data.create_valid(x_test, label=y_test.values.ravel())
-
-params = {
-    'learning_rate': 0.025,
-    'num_leaves': 51, 
-    'lambda_l2': 0.01,
-    'objective':'binary',
-    'tree_learner': 'voting_parallel',
-    'bagging_freq': 10,
-    'early_stopping_rounds': 25,
-    'top_k': 35,
-    'boosting': 'gbdt', # 'gbdt' default
-}
-num_round = 900
-bst = lgb.train(params, 
-                train_data, 
-                num_round, 
-                valid_sets=[test_data],
-               )
-# Save model
-bst.save_model('model.txt', num_iteration=bst.best_iteration)
+counter = 0
+with open('./predict.csv', 'w', newline='') as submitcsvfile:
+    submitwriter = csv.writer(submitcsvfile)
+    submitwriter.writerow(["sample_id", "malware"])
+    for index, val in enumerate(indexes):
+        if val == 0:
+            submitwriter.writerow([index, 0.875])
+        else:
+            submitwriter.writerow([index, ypred[counter]])
+            counter += 1
+print('Written to ./predict.csv')

@@ -3,6 +3,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import csv
+import os
 from struct import unpack
 
 # https://marcin-chwedczuk.github.io/a-closer-look-at-portable-executable-msdos-stub
@@ -108,46 +109,61 @@ def normalize_pe(parsed):
     output += [0] * (N - len(output))
     return output
 
+train = []
+train_label = []
 
-# Save model
-bst = lgb.Booster(model_file="../model - 0.99255.txt")
+train_path = next(p for p in ['./data/train.csv', './train.csv'] if os.path.isfile(p))
+train_labels_path = next(p for p in ['./data/train_label.csv', './train_label.csv'] if os.path.isfile(p))
 
-test = []
-indexes = []
-with open('./data/test.csv') as combinedcsvfile:
-    combinedreader = csv.reader(combinedcsvfile)
-    for i, row in enumerate(combinedreader):
+with open(train_path) as traincsvfile, open(train_labels_path) as trainlabelcsvfile:
+    trainreader = csv.reader(traincsvfile)
+    trainlabelreader = csv.reader(trainlabelcsvfile)
+    for i, row in enumerate(trainreader):
+        if i > 5000:
+            break
         try:
             parsed = parse_hex(bytes([int(x) for x in row]))
             out = normalize_pe(parsed)
-            test += [out]
-            indexes += [1]
+            train += [out]
+            train_label += [trainlabelreader.__next__()[1]]
         except Exception as inst:
-            print("Failed to parse")
+            print(i)
+            print("Failed to parse: is_malware =", trainlabelreader.__next__()[1])
             print(inst.args)
-            indexes += [0]
 
-pd.DataFrame(indexes).to_csv('./data/parsed_indicies.csv', index=False, header=False)
-pd.DataFrame(test).to_csv('./data/parsed_test.csv', index=False, header=False)
+train = pd.DataFrame(train)
+train_label = pd.DataFrame(train_label)
 
-TOTAL_ROWS = 133223
-ROWS = TOTAL_ROWS
-test = pd.read_csv("./parsed_test.csv", nrows=ROWS, header=None)
-ypred = bst.predict(test, num_iteration=bst.best_iteration)
+assert train.shape[0] == train_label.shape[0], "Train and label shapes are different"
 
-df = pd.DataFrame(ypred)
-df.to_csv('./predict.csv', index=False, header=False)
+mask = np.random.rand(len(train)) < 0.8
 
-with open('./output.csv', 'w', newline='') as submitcsvfile:
-    submitwriter = csv.writer(submitcsvfile)
-    submitwriter.writerow(["sample_id", "malware"])
-    with open('./predict.csv') as predictcsvfile:
-        predictreader = csv.reader(predictcsvfile)
-        with open('./parsed_indices.csv') as csvfile:
-            rowreader = csv.reader(csvfile)
-            for index, row in enumerate(rowreader):
-                if row[0] == "0":
-                    print(0.875)
-                    submitwriter.writerow([index, 0.875])
-                else:
-                    submitwriter.writerow([index] + predictreader.__next__())
+x_train = train[mask]
+y_train = train_label[mask]
+x_test = train[~mask]
+y_test = train_label[~mask]
+
+train_data = lgb.Dataset(x_train, label=y_train.values.ravel())
+
+# Create validation data
+test_data = train_data.create_valid(x_test, label=y_test.values.ravel())
+
+params = {
+    'learning_rate': 0.025,
+    'num_leaves': 51, 
+    'lambda_l2': 0.01,
+    'objective':'binary',
+    'tree_learner': 'voting_parallel',
+    'bagging_freq': 10,
+    'early_stopping_rounds': 25,
+    'top_k': 35,
+    'boosting': 'gbdt', # 'gbdt' default
+}
+num_round = 900
+bst = lgb.train(params, 
+                train_data, 
+                num_round, 
+#                 valid_sets=[test_data],
+               )
+# Save model
+bst.save_model('model.txt', num_iteration=bst.best_iteration)
